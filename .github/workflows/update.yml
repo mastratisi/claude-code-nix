@@ -1,0 +1,48 @@
+name: update
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"   # every six hours
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read Anthropic's release manifest
+        run: nix develop --command ./update.sh
+
+      - name: Stop here if nothing changed
+        id: diff
+        run: |
+          if git diff --quiet -- release.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$(jq -r .version release.json)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and smoke-test
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          nix build --print-build-logs
+          ./result/bin/claude --version | grep -F "${{ steps.diff.outputs.version }}"
+
+      - name: Commit and tag
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release.json
+          git commit -m "claude-code ${{ steps.diff.outputs.version }}"
+          git tag "v${{ steps.diff.outputs.version }}"
+          git push --atomic origin HEAD "v${{ steps.diff.outputs.version }}"
